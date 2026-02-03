@@ -1,0 +1,265 @@
+1. DATA AUDIT
+a. Dataset Observation:
+	37,408 rows
+	Only ~22,200 valid employees
+	~15,000 rows are essentially empty noise
+b. Column issues:
+| Column      | Issue                         |
+| ----------- | ----------------------------- |
+| `id`        | Object instead of categorical |
+| `birthdate` | String, mixed formats         |
+| `hire_date` | String                        |
+| `termdate`  | Partial nulls + timezone      |
+| All others  | Object instead of category    |
+c. HR Red Flags:
+	termdate exists → attrition analysis
+	hire_date + birthdate → age at hire, tenure
+	department, jobtitle, location → org design
+	gender, race → DEI analytics
+
+2. DATA CLEANING
+a. Removed rows which are having invalid ID:
+	data = data[data['id'].notna()].copy()
+b. Standardizing date columns:
+	df['birthdate'] = pd.to_datetime(df['birthdate'], errors='coerce')
+	df['hire_date'] = pd.to_datetime(df['hire_date'], errors='coerce')
+
+	df['termdate'] = (
+    		pd.to_datetime(df['termdate'], errors='coerce')
+      			.dt.tz_localize(None)
+)
+c. Fix Categorical Columns:
+	cat_cols = [ 'gender', 'race', 'department', 'jobtitle', 'location', 'location_city', 'location_state']
+	for col in cat_cols:
+    		data[col] = data[col].astype('category')
+
+3. FEATURE ENGINEERING:
+a. age: 
+	today = pd.Timestamp.today()
+	data['age'] = (today - data['birthdate']).dt.days // 365
+b. tenure: 
+	data['tenure_years'] = ((data['termdate'].fillna(today) - data['hire_date']) .dt.days / 365).round(1)
+c. employee status:
+	data['employment_status'] = data['termdate'].apply( lambda x: 'Terminated' if pd.notna(x) else 'Active')
+
+4. FACT TABLE:
+The FactEmployees table represents the core transactional entity of the HR system at the employee grain (one row per employee). It stores measurable attributes and key dates required for workforce analytics.
+
+5. DIM TABLE:
+a. DimDepartment: DimDepartment provides a normalized list of organizational departments, used to categorize employees by functional area.
+b. DimLocation: DimLocation captures the geographic structure of the workforce, including location, city, and state.
+c. DimDate (Calendar Table): DimDate is a standardized calendar dimension used to perform accurate time-based analysis across hiring and termination events.
+
+6. WHY STAR SCHEMA?
+- Ensures a clean separation of metrics (facts) and descriptive attributes (dimensions)
+- Improves dashboard performance, scalability, and maintainability
+- Aligns with enterprise data warehousing best practices
+
+7. EXPORTING FOR POWER BI & LOAD INTO POWER BI
+
+8. POWER BI RELATIONSHIPS:
+| From                          | To                            | Cardinality           |
+| ----------------------------- | ----------------------------- | --------------------- |
+| FactEmployees[department_key] | DimDepartment[department_key] | Many → One            |
+| FactEmployees[location_key]   | DimLocation[location_key]     | Many → One            |
+| FactEmployees[hire_date]      | DimDate[date]                 | Many → One            |
+| FactEmployees[termdate]       | DimDate[date]                 | Many → One (Inactive) |
+
+9. DAX:
+a. Headcount =
+CALCULATE(
+    COUNT(Employees[id]),
+    Employees[employment_status] = "Active"
+)
+b. Attrition =
+CALCULATE(
+    COUNT(Employees[id]),
+    Employees[employment_status] = "Terminated"
+)
+c. Attrition Rate =
+DIVIDE([Attrition], [Attrition] + [Headcount])
+d. Avg Tenure =
+AVERAGE(Employees[tenure_years])
+e. Average Age = AVERAGE(FactEmployees[age])
+f. Attrition Risk Flag = 
+IF(
+    [Attrition Rate] > 0.15,
+    1,
+    0
+)
+g. Attrition Color = 
+IF(
+    [Attrition Risk Flag] = 1,
+    "#C62828",   -- 🔴 High Risk Red
+    "#81C784"    -- 🟢 Normal Green
+)
+h. Departments at Risk = 
+CALCULATE(
+    DISTINCTCOUNT(DimDepartment[department]),
+    FILTER(
+        ALLSELECTED(DimDepartment[department]),
+        [Attrition Risk Flag] = 1
+    )
+)
+i. Workforce Risk Level = 
+VAR AttritionRate = [Attrition Rate]
+VAR AvgTenure = [Avg Tenure]
+
+RETURN
+SWITCH(
+    TRUE(),
+
+    AttritionRate > 0.20,
+    "🔴 High Risk",
+
+    AttritionRate > 0.10 || AvgTenure < 3,
+    "🟠 Watch",
+
+    "🟢 Stable"
+)
+j. Dept Recommendation = 
+VAR DeptAttrition = [Attrition Rate]
+
+RETURN
+SWITCH(
+    TRUE(),
+
+    DeptAttrition > 0.20,
+    "🚨 Attrition in this department is critically high. Immediate retention action required.",
+
+    DeptAttrition > 0.15,
+    "⚠️ Attrition exceeds acceptable threshold. Review exits, workload, and manager effectiveness.",
+
+    "✅ Attrition in this department is within acceptable limits."
+)
+k. Executive Recommendation = 
+VAR AttritionRate = [Attrition Rate]
+VAR AvgTenure = [Avg Tenure]
+
+RETURN
+SWITCH(
+    TRUE(),
+
+    AttritionRate > 0.20 && AvgTenure < 2,
+    "🚨 High attrition driven by early-tenure exits. Strengthen onboarding, role clarity, and first-year engagement programs.",
+
+    AttritionRate > 0.20,
+    "⚠️ Attrition exceeds acceptable threshold. Conduct department-level exit analysis and manager effectiveness review.",
+
+    AvgTenure < 2,
+    "⚠️ Low average tenure indicates possible role-fit or hiring quality issues. Review recruitment and probation processes.",
+
+    AttritionRate <= 0.10 && AvgTenure >= 4,
+    "✅ Workforce is stable with strong retention. Focus on leadership development and internal mobility.",
+
+    "ℹ️ Workforce metrics are within normal range. Continue monitoring retention and engagement trends."
+)
+l. Total Employees :=
+CALCULATE(
+    COUNT(FactEmployees[id]),
+    FactEmployees[employment_status] = "Active"
+)
+m. Departments Covered :=
+DISTINCTCOUNT(DimDepartment[department])
+n. States Covered :=
+DISTINCTCOUNT(DimLocation[location_state])
+o. Employees Under 30 % :=
+DIVIDE(
+    CALCULATE(
+        COUNT(FactEmployees[id]),
+        FactEmployees[age] < 30,
+        FactEmployees[employment_status] = "Active"
+    ),
+    [Total Employees]
+)
+p. Age Group Sort =
+SWITCH(
+    TRUE(),
+    FactEmployees[age] < 30, 1,
+    FactEmployees[age] >= 30 && FactEmployees[age] <= 45, 2,
+    3
+)
+q. Early Tenure Attrition Count :=
+CALCULATE(
+    COUNT(FactEmployees[id]),
+    FactEmployees[employment_status] = "Terminated",
+    FactEmployees[tenure_years] <= 2
+)
+r. Early Tenure Attrition % :=
+DIVIDE(
+    [Early Tenure Attrition Count],
+    [Attrition]
+)
+
+10. DASHBOARD LAYOUT:
+a. Page 1: Executive Overview
+- Summary: The workforce remains stable overall, but attrition risk is concentrated in specific departments, requiring targeted retention strategies rather than organization-wide intervention.
+- KPI cards: Headcount, Attrition %,Attrition, Avg Tenure, Average Age, Workforce Risk Level 
+- Line Chart: Headcount Trend Over Time
+- Column Chart: Attrition by Department
+- Column Chart: Attrition Rate by Department
+- Column Chart: Avg Tenure by Department
+- Donut Chart: Employee Distribution by Employment Status
+- Slicers: Year-Quarter-Month, state, city, department, employee status
+1. Moderate Enterprise-Wide Attrition Risk
+🔍 Insight: The overall attrition rate stands at 16.85%, exceeding the acceptable benchmark of 15%, placing the organization in a “Watch” risk category despite strong average tenure (14.47 years).
+🎯 Recommendation: Initiate targeted retention monitoring rather than broad policy changes. Focus on identifying localized drivers of attrition rather than treating this as an organization-wide crisis.
+2. Attrition Risk Is Concentrated, Not Widespread
+🔍 Insight: Out of all departments, 11 departments exceed the attrition threshold, while the remaining departments operate within acceptable limits. This indicates risk concentration, not systemic failure.
+🎯 Recommendation: Prioritize department-specific intervention plans for at-risk units. Deploy exit-interview analysis, workload assessments, and manager effectiveness reviews only in flagged departments to maximize ROI.
+High Attrition Persists Even in High-Tenure Departments
+🔍 Insight: Several departments with above-average tenure still show elevated attrition rates, suggesting that employee exits are not driven by early-career churn but potentially by role stagnation or leadership issues.
+🎯 Recommendation: Introduce mid-career engagement programs, internal mobility pathways, and leadership coaching for long-tenure teams to reduce experienced talent loss.
+4. Workforce Size Is Stable but Vulnerable
+🔍 Insight: Headcount trends show long-term stability with no major contraction; however, the combination of rising attrition and stable hiring indicates a replacement-driven workforce, increasing operational risk if attrition accelerates.
+🎯 Recommendation: Shift from reactive hiring to predictive workforce planning by aligning hiring pipelines with high-risk departments and implementing early warning indicators for attrition spikes.
+
+Page 2: Workforce Diversity
+- Objective: To provide leadership with a clear view of workforce representation across gender, race, and geography, and identify potential concentration or imbalance risks.
+- Gender and race attributes were not available in the source data; analysis focuses on organizational and geographic representation.
+- Summary: The workforce shows strong mid-career stability with balanced departmental age distribution, but long-term sustainability will benefit from increased early-career hiring and broader geographic reach.
+- Kpi: Total Active Employees, Department Coverage, State Coverage, Avg Age, Early Career Workforce%
+- shape map: employee distribution by state
+- column chart: headcount by department
+- histogram: age distribution
+- column chart: age group by department
+- Slicers: Year-Quarter-Month, state, city, department, age group
+1. Workforce Is Mid-Career Heavy
+🔍 Insight: The workforce is predominantly concentrated in the 30–45 age group, while early-career employees (<30) represent only ~18% of total headcount. This indicates a mature but potentially aging workforce.
+🎯 Recommendation: Strengthen early-career hiring pipelines (campus hiring, internships, graduate programs) to ensure long-term workforce continuity and reduce future skill-gap risks.
+2. Geographic Presence Is Limited but Concentrated
+🔍 Insight: Employees are distributed across 7 states, with noticeable concentration in a few regions. This suggests operational efficiency but also geographic dependency risk.
+🎯 Recommendation: Evaluate opportunities for geographic diversification, especially for roles that can support remote or hybrid work, to improve resilience and access broader talent pools.
+3. Department Headcount Is Highly Skewed
+🔍 Insight: A small number of departments (e.g., Engineering, Accounting, HR) account for a disproportionate share of total headcount, while several functions remain comparatively lean.
+🎯 Recommendation: Periodically review workload balance and resourcing needs to ensure smaller departments are not under-resourced as organizational demand grows.
+4. Consistent Age Mix Across Departments (Positive Signal)
+🔍 Insight: Age-group distribution is relatively consistent across most departments, indicating balanced workforce maturity rather than isolated age clustering.
+🎯 Recommendation: Maintain this balance by aligning succession planning and internal mobility programs to preserve cross-generational knowledge transfer.
+
+Page 3: Attrition Deep Dive
+- Objective: To identify who is leaving, when they are leaving, and which departments are most affected, enabling targeted retention actions.
+- Summary: Attrition is primarily driven by mid-to-late tenure and experienced employees, indicating structural and career-progression challenges rather than early-career churn.
+- KPI: attrition, attrition rate%, early tenure attrition, avg tenure, high risk department
+- Line chart: attrition trend over time
+- Line chart: attrition contribution by tenure bucket%
+- Matrix: Department wise attrition rate
+- column chart: attrition by tenure bucket
+- histogram: attrition by age group
+- Slicers: Year-Quarter-Month, state, city, tenure bucket, age group
+1: Attrition Is Not an Early-Career Problem
+🔍 Insight: Only 9.1% of attrition occurs within the first two years, while the average tenure at exit is high (14.47 years). This indicates that employee exits are not driven by onboarding or early role-fit issues.
+🎯 Recommendation: Shift retention focus away from onboarding fixes and toward mid-career engagement, including role enrichment, internal mobility, and leadership development programs.
+2: Mid-to-Late Tenure Employees Drive Attrition Volume
+🔍 Insight: The highest attrition counts are observed in the 5–10 years and 10+ years tenure buckets, showing that experienced employees contribute the majority of exits.
+🎯 Recommendation: Implement career progression frameworks and succession planning for mid-tenure employees to reduce stagnation-driven attrition and protect institutional knowledge.
+3: Attrition Risk Is Widespread Across Departments
+🔍 Insight: 11 departments exceed the acceptable attrition threshold, indicating that attrition risk is structural rather than isolated to one or two teams.
+🎯 Recommendation: Adopt a department-level retention review model, prioritizing high-risk departments for manager effectiveness analysis, workload balancing, and targeted retention initiatives.
+4: Attrition Skews Toward Older Age Groups
+🔍 Insight: Attrition is significantly higher among employees aged 45+, compared to early-career employees, suggesting exits may be driven by career plateauing, leadership friction, or external opportunities.
+🎯 Recommendation: Introduce late-career flexibility options such as mentoring roles, phased retirement, or advisory positions to retain senior talent and enable knowledge transfer.
+
+
+
+
