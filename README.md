@@ -91,13 +91,6 @@ Key data challenges addressed:
 
 ---
 
-### Page 4 (Optional) — Department Drill-Through
-- Enables focused investigation of a single department
-- Activated via drill-through from Page 3
-- Supports leadership-level diagnostics
-
----
-
 ## 📐 Key DAX Measures
 - Attrition Rate
 - Early Tenure Attrition %
@@ -125,5 +118,5 @@ Key data challenges addressed:
 
 ## 📬 Contact
 If you’d like to discuss this project, BI design, or analytics roles:
-- LinkedIn: [Your LinkedIn]
-- GitHub: [Your GitHub]
+- LinkedIn: https://www.linkedin.com/posts/jyotigupta-da_dataanalytics-powerbi-hranalytics-activity-7424493165199515649-TuzZ?utm_source=share&utm_medium=member_desktop&rcm=ACoAAExVrF0Bonclg9qL8pLUeG0Z3wvbFD0SGLo
+- GitHub: https://github.com/jyoti7575
